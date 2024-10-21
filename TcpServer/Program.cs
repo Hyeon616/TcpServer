@@ -324,6 +324,11 @@ namespace TcpServer
                 return JsonConvert.SerializeObject(new { status = "error", message = "이미 존재하는 방 이름입니다." });
             }
 
+            if (playerRooms.ContainsKey(hostId))
+            {
+                return JsonConvert.SerializeObject(new { status = "error", message = "플레이어가 이미 방에 있습니다." });
+            }
+
             var newRoom = new Room
             {
                 Name = roomName,
@@ -349,6 +354,11 @@ namespace TcpServer
             if (room.Players.Count >= room.MaxPlayers)
             {
                 return JsonConvert.SerializeObject(new { status = "error", message = "방이 가득 찼습니다." });
+            }
+
+            if (playerRooms.ContainsKey(playerId))
+            {
+                return JsonConvert.SerializeObject(new { status = "error", message = "플레이어가 이미 방에 있습니다." });
             }
 
             room.Players.Add(playerId);
