@@ -21,6 +21,7 @@ namespace TcpServer
         readonly static string connectDB = "server=localhost;user=root;password=1234;database=unityproject";
         private static Dictionary<string, Room> rooms = new Dictionary<string, Room>();
         private static Dictionary<string, string> playerRooms = new Dictionary<string, string>();
+        private static List<TcpClient> connectedClients = new List<TcpClient>();
 
         static void Main(string[] args)
         {
@@ -41,35 +42,112 @@ namespace TcpServer
                 {
                     TcpClient client = server.AcceptTcpClient();
 
-                    Console.WriteLine("클라이언트가 연결되었습니다.");
+                    connectedClients.Add(client);
+                    Console.WriteLine($"클라이언트 {client}가 연결되었습니다.");
 
-                    NetworkStream stream = client.GetStream();
+                    Thread clientThread = new Thread(() => BroadcastClient(client));
+                    clientThread.Start();
 
-                    byte[] bytes = new byte[1024];
-                    string data = null;
-                    int i;
-
-                    while ((i = stream.Read(bytes, 0, bytes.Length)) != 0)
-                    {
-                        data = Encoding.UTF8.GetString(bytes, 0, i);
-                        Console.WriteLine($"응답 : {data}");
-                        string response = SendQuery(data);
-                        byte[] msg = Encoding.UTF8.GetBytes(response);
-                        stream.Write(msg, 0, msg.Length);
-
-
-                    }
-
-                    client.Close();
                 }
-
-
             }
             catch (SocketException e)
             {
                 Console.WriteLine($"SocketException : {e}");
             }
         }
+
+        private static void BroadcastClient(TcpClient client)
+        {
+            NetworkStream stream = client.GetStream();
+            byte[] bytes = new byte[1024];
+            string data = null;
+            int i;
+            string playerId = null;
+
+            try
+            {
+                while ((i = stream.Read(bytes, 0, bytes.Length)) != 0)
+                {
+                    data = Encoding.UTF8.GetString(bytes, 0, i);
+                    Console.WriteLine($"응답 : {data}");
+                    string response = SendQuery(data);
+                    byte[] msg = Encoding.UTF8.GetBytes(response);
+
+                    var responseData = JsonConvert.DeserializeObject<Dictionary<string, object>>(response);
+                    if (responseData.TryGetValue("action", out object action))
+                    {
+                        if (action.ToString() == "login" && responseData["status"].ToString() == "success")
+                        {
+                            playerId = responseData["userId"].ToString();
+                        }
+
+                        else if (action.ToString() == "create_room" || action.ToString() == "join_room" || action.ToString() == "leave_room")
+                        {
+                            if (responseData["status"].ToString() == "success")
+                            {
+                                
+                                stream.Write(msg, 0, msg.Length);
+
+                                BroadcastRoomList(client);
+                            }
+                            else
+                            {
+                                
+                                stream.Write(msg, 0, msg.Length);
+                            }
+                        }
+                        else
+                        {
+                            stream.Write(msg, 0, msg.Length);
+                        }
+                    }
+                }
+            }
+            catch (Exception e)
+            {
+                Console.WriteLine($"Error handling client: {e.Message}");
+            }
+            finally
+            {
+                if (!string.IsNullOrEmpty(playerId))
+                {
+                    string leaveResponse = LeaveRoom(playerId);
+                    if (leaveResponse.Contains("success"))
+                    {
+                        BroadcastRoomList(client);
+                    }
+                }
+
+                connectedClients.Remove(client);
+                stream.Close();
+                client.Close();
+            }
+        }
+
+        private static void BroadcastRoomList(TcpClient localClient)
+        {
+            string roomListResponse = GetRoomList();
+            byte[] roomListMsg = Encoding.UTF8.GetBytes(roomListResponse);
+
+            // 리스트가 중간에 터졌을 때를 방지하기위해 ToList() 사용
+            foreach (TcpClient client in connectedClients.ToList())
+            {
+                try
+                {
+                    if (client.Connected && client != localClient)
+                    {
+                        NetworkStream stream = client.GetStream();
+                        stream.Write(roomListMsg, 0, roomListMsg.Length);
+                    }
+                }
+                catch (Exception e)
+                {
+                    Console.WriteLine($"broadcast가 실패했습니다 : {e.Message}");
+                    connectedClients.Remove(client);
+                }
+            }
+        }
+
 
         private static string SendQuery(string data)
         {
@@ -104,7 +182,7 @@ namespace TcpServer
                             {
                                 return SavePlayerData(userId.ToString(), characterData.ToString());
                             }
-                            break ;
+                            break;
                         case "create_room":
                             if (request.TryGetValue("roomName", out object roomName) &&
                                 request.TryGetValue("hostId", out object hostId) &&
@@ -218,7 +296,7 @@ namespace TcpServer
                         }
                     }
 
-                     query = "SELECT * FROM character_data WHERE player_id = @playerId";
+                    query = "SELECT * FROM character_data WHERE player_id = @playerId";
                     using (MySqlCommand Command = new MySqlCommand(query, connection))
                     {
                         Command.Parameters.AddWithValue("@playerId", id);
