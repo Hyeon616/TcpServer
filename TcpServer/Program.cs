@@ -59,7 +59,7 @@ namespace TcpServer
         private static void BroadcastClient(TcpClient client)
         {
             NetworkStream stream = client.GetStream();
-            byte[] bytes = new byte[1024];
+            byte[] bytes = new byte[8192];
             string data = null;
             int i;
             string playerId = null;
@@ -71,6 +71,7 @@ namespace TcpServer
                     data = Encoding.UTF8.GetString(bytes, 0, i);
                     Console.WriteLine($"응답 : {data}");
                     string response = SendQuery(data);
+                    Console.WriteLine($"응답 데이터: {response}");
                     byte[] msg = Encoding.UTF8.GetBytes(response);
 
                     var responseData = JsonConvert.DeserializeObject<Dictionary<string, object>>(response);
@@ -80,26 +81,23 @@ namespace TcpServer
                         {
                             playerId = responseData["userId"].ToString();
                         }
-
                         else if (action.ToString() == "create_room" || action.ToString() == "join_room" || action.ToString() == "leave_room")
                         {
                             if (responseData["status"].ToString() == "success")
                             {
-                                
-                                stream.Write(msg, 0, msg.Length);
 
                                 BroadcastRoomList(client);
+
                             }
                             else
                             {
-                                
+
                                 stream.Write(msg, 0, msg.Length);
                             }
                         }
-                        else
-                        {
-                            stream.Write(msg, 0, msg.Length);
-                        }
+
+                        stream.Write(msg, 0, msg.Length);
+
                     }
                 }
             }
@@ -206,6 +204,14 @@ namespace TcpServer
                             break;
                         case "get_room_list":
                             return GetRoomList();
+                        case "start_game":
+                            if (request.TryGetValue("roomName", out object startRoomName) &&
+                                request.TryGetValue("hostId", out object roomHostId) &&
+                                request.TryGetValue("sceneName", out object sceneName))
+                            {
+                                return StartGame(startRoomName.ToString(), roomHostId.ToString(), sceneName.ToString());
+                            }
+                            break;
                     }
                 }
 
@@ -473,6 +479,29 @@ namespace TcpServer
 
             return JsonConvert.SerializeObject(new { status = "success", action = "leave_room", message = "방 퇴장 성공", room = room });
         }
+
+        private static string StartGame(string roomName, string hostId, string sceneName)
+        {
+            if (!rooms.TryGetValue(roomName, out Room room))
+            {
+                return JsonConvert.SerializeObject(new { status = "error", message = "방을 찾을 수 없습니다." });
+            }
+
+            if (room.HostId != hostId)
+            {
+                return JsonConvert.SerializeObject(new { status = "error", message = "방장만 게임을 시작할 수 있습니다." });
+            }
+
+            return JsonConvert.SerializeObject(new
+            {
+                status = "success",
+                action = "start_game",
+                message = "게임을 시작합니다.",
+                sceneName = sceneName
+            });
+        }
+
+
 
         private static string GetRoomList()
         {
