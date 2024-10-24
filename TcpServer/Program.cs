@@ -492,13 +492,35 @@ namespace TcpServer
                 return JsonConvert.SerializeObject(new { status = "error", message = "방장만 게임을 시작할 수 있습니다." });
             }
 
-            return JsonConvert.SerializeObject(new
+            var gameStart = JsonConvert.SerializeObject(new
             {
                 status = "success",
                 action = "start_game",
                 message = "게임을 시작합니다.",
                 sceneName = sceneName
             });
+
+            byte[] messageBytes = Encoding.UTF8.GetBytes(gameStart);
+
+            foreach (TcpClient client in connectedClients.ToList())
+            {
+                try
+                {
+                    if (client.Connected)
+                    {
+                        NetworkStream stream = client.GetStream();
+                        stream.Write(messageBytes, 0, messageBytes.Length);
+                    }
+                }
+                catch (Exception e)
+                {
+                    Console.WriteLine($"게임 시작 메시지 전송 실패: {e.Message}");
+                    connectedClients.Remove(client);
+                }
+            }
+
+            return gameStart;
+
         }
 
 
