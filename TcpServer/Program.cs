@@ -156,6 +156,7 @@ namespace TcpServer
                 if (request.TryGetValue("action", out object requestAction) && requestAction != null)
                 {
                     string action = requestAction.ToString();
+                    string currentRoomName;
 
                     switch (action)
                     {
@@ -212,6 +213,99 @@ namespace TcpServer
                                 return StartGame(startRoomName.ToString(), roomHostId.ToString(), sceneName.ToString());
                             }
                             break;
+                        case "player_spawn":
+                            {
+                                string playerId = request["playerId"].ToString();
+                                var position = request["position"].ToString();
+                                int maxHealth = Convert.ToInt32(request["maxHealth"]);
+                                int attackPower = Convert.ToInt32(request["attackPower"]);
+
+                                // 방의 다른 플레이어들에게 새 플레이어 스폰을 알림
+                                if (playerRooms.TryGetValue(playerId, out currentRoomName))
+                                {
+                                    var spawnMessage = JsonConvert.SerializeObject(new
+                                    {
+                                        action = "player_spawn",
+                                        playerId = playerId,
+                                        position = JsonConvert.DeserializeObject(position),
+                                        maxHealth = maxHealth,
+                                        attackPower = attackPower
+                                    });
+
+                                    // 같은 방의 다른 플레이어들에게 브로드캐스트
+                                    foreach (TcpClient client in connectedClients)
+                                    {
+                                        try
+                                        {
+                                            if (client.Connected)
+                                            {
+                                                NetworkStream stream = client.GetStream();
+                                                byte[] messageBytes = Encoding.UTF8.GetBytes(spawnMessage);
+                                                stream.Write(messageBytes, 0, messageBytes.Length);
+                                            }
+                                        }
+                                        catch (Exception e)
+                                        {
+                                            Console.WriteLine($"스폰 메시지 전송 실패: {e.Message}");
+                                        }
+                                    }
+                                }
+
+                                return JsonConvert.SerializeObject(new { status = "success" });
+                            }
+
+                        case "player_state":
+                            {
+                                string playerId = request["playerId"].ToString();
+                                if (playerRooms.TryGetValue(playerId, out currentRoomName))
+                                {
+                                    // 상태 메시지를 같은 방의 다른 플레이어들에게 전달
+                                    foreach (TcpClient client in connectedClients)
+                                    {
+                                        try
+                                        {
+                                            if (client.Connected)
+                                            {
+                                                NetworkStream stream = client.GetStream();
+                                                byte[] messageBytes = Encoding.UTF8.GetBytes(data);
+                                                stream.Write(messageBytes, 0, messageBytes.Length);
+                                            }
+                                        }
+                                        catch (Exception e)
+                                        {
+                                            Console.WriteLine($"상태 메시지 전송 실패: {e.Message}");
+                                        }
+                                    }
+                                }
+                                return JsonConvert.SerializeObject(new { status = "success" });
+                            }
+
+                        case "player_action":
+                            {
+                                string playerId = request["playerId"].ToString();
+                                string actionName = request["actionName"].ToString();
+                                if (playerRooms.TryGetValue(playerId, out currentRoomName))
+                                {
+                                    // 액션 메시지를 같은 방의 다른 플레이어들에게 전달
+                                    foreach (TcpClient client in connectedClients)
+                                    {
+                                        try
+                                        {
+                                            if (client.Connected)
+                                            {
+                                                NetworkStream stream = client.GetStream();
+                                                byte[] messageBytes = Encoding.UTF8.GetBytes(data);
+                                                stream.Write(messageBytes, 0, messageBytes.Length);
+                                            }
+                                        }
+                                        catch (Exception e)
+                                        {
+                                            Console.WriteLine($"액션 메시지 전송 실패: {e.Message}");
+                                        }
+                                    }
+                                }
+                                return JsonConvert.SerializeObject(new { status = "success" });
+                            }
                     }
                 }
 
@@ -492,13 +586,34 @@ namespace TcpServer
                 return JsonConvert.SerializeObject(new { status = "error", message = "방장만 게임을 시작할 수 있습니다." });
             }
 
-            return JsonConvert.SerializeObject(new
+            var startGameMessage = JsonConvert.SerializeObject(new
             {
                 status = "success",
                 action = "start_game",
                 message = "게임을 시작합니다.",
                 sceneName = sceneName
             });
+
+            // 방의 모든 클라이언트에게 게임 시작 메시지 브로드캐스트
+            foreach (TcpClient client in connectedClients.ToList())
+            {
+                try
+                {
+                    if (client.Connected)
+                    {
+                        NetworkStream stream = client.GetStream();
+                        byte[] messageBytes = Encoding.UTF8.GetBytes(startGameMessage);
+                        stream.Write(messageBytes, 0, messageBytes.Length);
+                    }
+                }
+                catch (Exception e)
+                {
+                    Console.WriteLine($"게임 시작 메시지 전송 실패: {e.Message}");
+                    connectedClients.Remove(client);
+                }
+            }
+
+            return startGameMessage;
         }
 
 
