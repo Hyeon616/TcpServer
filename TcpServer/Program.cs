@@ -2,6 +2,7 @@
 using Newtonsoft.Json;
 using System.Net;
 using System.Net.Sockets;
+using System.Numerics;
 using System.Text;
 
 namespace TcpServer
@@ -13,8 +14,21 @@ namespace TcpServer
         public string HostId { get; set; }
         public List<string> Players { get; set; }
         public string MapName { get; set; }
+        public Dictionary<string, PlayerState> PlayerStates { get; set; } = new Dictionary<string, PlayerState>();
+        public HashSet<int> UsedSpawnPoints { get; set; } = new HashSet<int>(); 
     }
 
+    public class PlayerState
+    {
+        public string PlayerId { get; set; }
+        public Vector3 Position { get; set; }
+        public Quaternion Rotation { get; set; }
+        public bool IsRunning { get; set; }
+        public bool IsAction { get; set; }
+        public int MaxHealth { get; set; }  
+        public int CurrentHealth { get; set; }
+        public int AttackPower { get; set; }  
+    }
 
     internal class Program
     {
@@ -212,6 +226,18 @@ namespace TcpServer
                                 return StartGame(startRoomName.ToString(), roomHostId.ToString(), sceneName.ToString());
                             }
                             break;
+                        case "player_spawn":
+                            return PlayerSpawn(
+                                request["playerId"].ToString(),
+                                JsonConvert.DeserializeObject<Vector3>(request["position"].ToString()),
+                                Convert.ToInt32(request["maxHealth"]),
+                                Convert.ToInt32(request["attackPower"]));
+                        case "player_state":
+                            return PlayerState(request);
+                        case "player_action":
+                            return PlayerAction(
+                                request["playerId"].ToString(),
+                                request["actionName"].ToString());
                     }
                 }
 
@@ -344,6 +370,7 @@ namespace TcpServer
                 {
                     return JsonConvert.SerializeObject(new { status = "error", message = ex.Message });
                 }
+               
             }
         }
 
@@ -523,7 +550,91 @@ namespace TcpServer
 
         }
 
+        private static void BroadcastPlayerAction(string roomName, string message, string excludePlayerId = null)
+        {
+            if (!rooms.ContainsKey(roomName)) return;
 
+            byte[] messageBytes = Encoding.UTF8.GetBytes(message);
+            foreach (TcpClient client in connectedClients.ToList())
+            {
+                try
+                {
+                    if (client.Connected)
+                    {
+                        NetworkStream stream = client.GetStream();
+                        stream.Write(messageBytes, 0, messageBytes.Length);
+                    }
+                }
+                catch (Exception e)
+                {
+                    Console.WriteLine($"Broadcasting failed: {e.Message}");
+                    connectedClients.Remove(client);
+                }
+            }
+        }
+
+        private static string PlayerSpawn(string playerId, Vector3 position, int maxHealth, int attackPower)
+        {
+            if (!playerRooms.TryGetValue(playerId, out string roomName))
+            {
+                return JsonConvert.SerializeObject(new { status = "error", message = "플레이어가 방에 없습니다." });
+            }
+
+            if (!rooms.TryGetValue(roomName, out Room room))
+            {
+                return JsonConvert.SerializeObject(new { status = "error", message = "방을 찾을 수 없습니다." });
+            }
+
+            // 스폰 포인트 할당
+            int spawnIndex = 0;
+            while (room.UsedSpawnPoints.Contains(spawnIndex) && spawnIndex < 4)
+            {
+                spawnIndex++;
+            }
+            room.UsedSpawnPoints.Add(spawnIndex);
+
+            BroadcastPlayerAction(roomName, JsonConvert.SerializeObject(new
+            {
+                action = "player_spawn",
+                playerId = playerId,
+                position = position,
+                maxHealth = maxHealth,
+                attackPower = attackPower,
+                spawnIndex = spawnIndex
+            }), playerId);
+
+            return JsonConvert.SerializeObject(new { status = "success" });
+        }
+
+        private static string PlayerState(Dictionary<string, object> data)
+        {
+            string playerId = data["playerId"].ToString();
+            if (!playerRooms.TryGetValue(playerId, out string roomName))
+            {
+                return JsonConvert.SerializeObject(new { status = "error", message = "플레이어가 방에 없습니다." });
+            }
+
+            BroadcastPlayerAction(roomName, JsonConvert.SerializeObject(data), playerId);
+
+            return JsonConvert.SerializeObject(new { status = "success" });
+        }
+
+        private static string PlayerAction(string playerId, string actionName)
+        {
+            if (!playerRooms.TryGetValue(playerId, out string roomName))
+            {
+                return JsonConvert.SerializeObject(new { status = "error", message = "플레이어가 방에 없습니다." });
+            }
+
+            BroadcastPlayerAction(roomName, JsonConvert.SerializeObject(new
+            {
+                action = "player_action",
+                playerId = playerId,
+                actionName = actionName
+            }), playerId);
+
+            return JsonConvert.SerializeObject(new { status = "success" });
+        }
 
         private static string GetRoomList()
         {
