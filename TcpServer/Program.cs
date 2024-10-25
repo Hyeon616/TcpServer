@@ -2,6 +2,7 @@
 using Newtonsoft.Json;
 using System.Net;
 using System.Net.Sockets;
+using System.Numerics;
 using System.Text;
 
 namespace TcpServer
@@ -13,8 +14,15 @@ namespace TcpServer
         public string HostId { get; set; }
         public List<string> Players { get; set; }
         public string MapName { get; set; }
-    }
+        public Dictionary<string, Vector3> PlayerPositions { get; set; } = new Dictionary<string, Vector3>();
 
+    }
+    public class Vector3
+    {
+        public float x { get; set; }
+        public float y { get; set; }
+        public float z { get; set; }
+    }
 
     internal class Program
     {
@@ -58,6 +66,7 @@ namespace TcpServer
 
         private static void BroadcastClient(TcpClient client)
         {
+
             NetworkStream stream = client.GetStream();
             byte[] bytes = new byte[8192];
             string data = null;
@@ -216,28 +225,75 @@ namespace TcpServer
                         case "player_spawn":
                             {
                                 string playerId = request["playerId"].ToString();
-                                var position = request["position"].ToString();
+                                var position = JsonConvert.DeserializeObject<Dictionary<string, float>>(request["position"].ToString());
                                 int maxHealth = Convert.ToInt32(request["maxHealth"]);
                                 int attackPower = Convert.ToInt32(request["attackPower"]);
 
-                                // 방의 다른 플레이어들에게 새 플레이어 스폰을 알림
-                                if (playerRooms.TryGetValue(playerId, out currentRoomName))
+                                // 플레이어가 속한 방 찾기
+                                if (playerRooms.TryGetValue(playerId, out currentRoomName) &&
+                                    rooms.TryGetValue(currentRoomName, out Room room))
                                 {
+                                    // 플레이어 위치 정보 저장
+                                    var playerPosition = new Vector3
+                                    {
+                                        x = position["x"],
+                                        y = position["y"],
+                                        z = position["z"]
+                                    };
+                                    room.PlayerPositions[playerId] = playerPosition;
+
+                                    // 새로 들어온 플레이어에게 기존 플레이어들의 정보 전송
+                                    foreach (var existingPlayer in room.Players)
+                                    {
+                                        if (existingPlayer != playerId && room.PlayerPositions.ContainsKey(existingPlayer))
+                                        {
+                                            var existingPlayerPos = room.PlayerPositions[existingPlayer];
+                                            var existingPlayerMessage = JsonConvert.SerializeObject(new
+                                            {
+                                                action = "player_spawn",
+                                                playerId = existingPlayer,
+                                                position = existingPlayerPos,
+                                                maxHealth = maxHealth,
+                                                attackPower = attackPower
+                                            });
+
+                                            // 해당 방의 플레이어 중에서 `existingPlayer`에게만 전송
+                                            var clientToSend = connectedClients.FirstOrDefault(c =>
+                                                c.Connected &&
+                                                playerRooms.ContainsKey(existingPlayer) &&
+                                                playerRooms[existingPlayer] == currentRoomName);
+
+                                            if (clientToSend != null)
+                                            {
+                                                try
+                                                {
+                                                    NetworkStream stream = clientToSend.GetStream();
+                                                    byte[] messageBytes = Encoding.UTF8.GetBytes(existingPlayerMessage);
+                                                    stream.Write(messageBytes, 0, messageBytes.Length);
+                                                }
+                                                catch (Exception e)
+                                                {
+                                                    Console.WriteLine($"스폰 메시지 전송 실패: {e.Message}");
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    // 새 플레이어의 정보를 다른 플레이어들에게 전송
                                     var spawnMessage = JsonConvert.SerializeObject(new
                                     {
                                         action = "player_spawn",
                                         playerId = playerId,
-                                        position = JsonConvert.DeserializeObject(position),
+                                        position = playerPosition,
                                         maxHealth = maxHealth,
                                         attackPower = attackPower
                                     });
 
-                                    // 같은 방의 다른 플레이어들에게 브로드캐스트
-                                    foreach (TcpClient client in connectedClients)
+                                    foreach (var client in connectedClients)
                                     {
                                         try
                                         {
-                                            if (client.Connected)
+                                            if (client.Connected && room.Players.Contains(playerId))
                                             {
                                                 NetworkStream stream = client.GetStream();
                                                 byte[] messageBytes = Encoding.UTF8.GetBytes(spawnMessage);
@@ -257,50 +313,70 @@ namespace TcpServer
                         case "player_state":
                             {
                                 string playerId = request["playerId"].ToString();
-                                if (playerRooms.TryGetValue(playerId, out currentRoomName))
+
+                                // 플레이어의 방을 찾고, 방에 있는 플레이어들에게만 메시지를 전송
+                                if (playerRooms.TryGetValue(playerId, out currentRoomName) && rooms.TryGetValue(currentRoomName, out Room room))
                                 {
-                                    // 상태 메시지를 같은 방의 다른 플레이어들에게 전달
-                                    foreach (TcpClient client in connectedClients)
+                                    foreach (var targetPlayerId in room.Players)
                                     {
-                                        try
+                                        if (targetPlayerId != playerId) // 본인 제외
                                         {
-                                            if (client.Connected)
+                                            var targetClient = connectedClients.FirstOrDefault(c => playerRooms.ContainsKey(targetPlayerId) && playerRooms[targetPlayerId] == currentRoomName);
+                                            if (targetClient != null && targetClient.Connected)
                                             {
-                                                NetworkStream stream = client.GetStream();
-                                                byte[] messageBytes = Encoding.UTF8.GetBytes(data);
-                                                stream.Write(messageBytes, 0, messageBytes.Length);
+                                                try
+                                                {
+                                                    NetworkStream stream = targetClient.GetStream();
+                                                    byte[] messageBytes = Encoding.UTF8.GetBytes(data);
+                                                    stream.Write(messageBytes, 0, messageBytes.Length);
+                                                }
+                                                catch (Exception e)
+                                                {
+                                                    Console.WriteLine($"상태 메시지 전송 실패: {e.Message}");
+                                                }
                                             }
-                                        }
-                                        catch (Exception e)
-                                        {
-                                            Console.WriteLine($"상태 메시지 전송 실패: {e.Message}");
                                         }
                                     }
                                 }
                                 return JsonConvert.SerializeObject(new { status = "success" });
                             }
 
+
                         case "player_action":
                             {
                                 string playerId = request["playerId"].ToString();
                                 string actionName = request["actionName"].ToString();
-                                if (playerRooms.TryGetValue(playerId, out currentRoomName))
+
+                                // 플레이어가 속한 방 찾기
+                                if (playerRooms.TryGetValue(playerId, out currentRoomName) && rooms.TryGetValue(currentRoomName, out Room room))
                                 {
-                                    // 액션 메시지를 같은 방의 다른 플레이어들에게 전달
-                                    foreach (TcpClient client in connectedClients)
+                                    var actionMessage = JsonConvert.SerializeObject(new
                                     {
-                                        try
+                                        action = "player_action",
+                                        playerId = playerId,
+                                        actionName = actionName
+                                    });
+
+                                    byte[] messageBytes = Encoding.UTF8.GetBytes(actionMessage);
+
+                                    // 같은 방에 있는 플레이어들에게만 전송
+                                    foreach (var targetPlayerId in room.Players)
+                                    {
+                                        if (targetPlayerId != playerId) // 본인 제외
                                         {
-                                            if (client.Connected)
+                                            var targetClient = connectedClients.FirstOrDefault(c => playerRooms.ContainsKey(targetPlayerId) && playerRooms[targetPlayerId] == currentRoomName);
+                                            if (targetClient != null && targetClient.Connected)
                                             {
-                                                NetworkStream stream = client.GetStream();
-                                                byte[] messageBytes = Encoding.UTF8.GetBytes(data);
-                                                stream.Write(messageBytes, 0, messageBytes.Length);
+                                                try
+                                                {
+                                                    NetworkStream stream = targetClient.GetStream();
+                                                    stream.Write(messageBytes, 0, messageBytes.Length);
+                                                }
+                                                catch (Exception e)
+                                                {
+                                                    Console.WriteLine($"액션 메시지 전송 실패: {e.Message}");
+                                                }
                                             }
-                                        }
-                                        catch (Exception e)
-                                        {
-                                            Console.WriteLine($"액션 메시지 전송 실패: {e.Message}");
                                         }
                                     }
                                 }
@@ -558,6 +634,10 @@ namespace TcpServer
             }
 
             room.Players.Remove(playerId);
+            if (room.PlayerPositions.ContainsKey(playerId))
+            {
+                room.PlayerPositions.Remove(playerId);
+            }
             playerRooms.Remove(playerId);
 
             if (room.Players.Count == 0)
@@ -615,6 +695,41 @@ namespace TcpServer
 
             return startGameMessage;
         }
+        private static void BroadcastToRoom(Room room, string message)
+        {
+            byte[] messageBytes = Encoding.UTF8.GetBytes(message);
+            foreach (var playerId in room.Players)
+            {
+                var client = connectedClients.FirstOrDefault(c => playerRooms.ContainsKey(playerId) && playerRooms[playerId] == room.Name);
+                if (client != null && client.Connected)
+                {
+                    try
+                    {
+                        NetworkStream stream = client.GetStream();
+                        stream.Write(messageBytes, 0, messageBytes.Length);
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"스폰 메시지 전송 실패: {ex.Message}");
+                    }
+                }
+            }
+        }
+
+        private static void SendToClient(TcpClient client, string message)
+        {
+            byte[] messageBytes = Encoding.UTF8.GetBytes(message);
+            try
+            {
+                NetworkStream stream = client.GetStream();
+                stream.Write(messageBytes, 0, messageBytes.Length);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"클라이언트 메시지 전송 실패: {ex.Message}");
+            }
+        }
+
 
 
 
