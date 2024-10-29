@@ -524,14 +524,22 @@ namespace TcpServer
                 return ErrorResponse("방장만 게임을 시작할 수 있습니다.");
             }
 
-            var gameData = new Dictionary<string, object>
-        {
-            { "sceneName", sceneName }
-        };
+            // 모든 플레이어에게 전달할 메시지 생성
+            var startGameMessage = new
+            {
+                status = "success",
+                action = "start_game",
+                message = "게임을 시작합니다.",
+                sceneName = sceneName
+            };
 
-            var response = Response("start_game", true, "게임을 시작합니다.", gameData);
-            await BroadcastToRoom(roomName, response);
-            return response;
+            // 응답 생성
+            string messageJson = JsonSerializer.Serialize(startGameMessage);
+
+            // 방에 있는 모든 플레이어에게 메시지 전송
+            await BroadcastToRoom(roomName, messageJson);
+
+            return messageJson;
         }
 
         private async Task<string> GetRoomList()
@@ -596,10 +604,13 @@ namespace TcpServer
             {
                 if (connection.IsConnected && room.Players.Contains(connection.PlayerId))
                 {
+                    // 각 플레이어에게 개별적으로 메시지 전송
+                    Console.WriteLine($"게임 시작 메시지 전송 to {connection.PlayerId}");
                     tasks.Add(connection.Send(messageBytes));
                 }
             }
 
+            // 모든 전송 작업이 완료될 때까지 대기
             await Task.WhenAll(tasks);
         }
 
