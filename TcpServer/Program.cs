@@ -3,8 +3,8 @@ using Newtonsoft.Json;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
-using System.Text.Json;
-using JsonSerializer = System.Text.Json.JsonSerializer;
+//using System.Text.Json;
+//using JsonSerializer = System.Text.Json.JsonSerializer;
 
 namespace TcpServer
 {
@@ -16,6 +16,18 @@ namespace TcpServer
         public string HostId { get; set; }
         public List<string> Players { get; set; } = new();
         public string MapName { get; set; }
+        public Dictionary<string, int> SpawnIndexes { get; set; } = new();
+
+        public int GetNextSpawnIndex()
+        {
+            var usedIndexes = SpawnIndexes.Values.ToHashSet();
+            for (int i = 0; i < MaxPlayers; i++)
+            {
+                if (!usedIndexes.Contains(i))
+                    return i;
+            }
+            return 0;
+        }
     }
 
     public class PlayerCharacterData
@@ -314,8 +326,8 @@ namespace TcpServer
         {
             if (connection.PlayerId != null && playerRooms.TryGetValue(connection.PlayerId, out _))
             {
-                string requestJson = JsonSerializer.Serialize(new { action = "leave_room", playerId = connection.PlayerId });
-                var request = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(requestJson);
+                string requestJson = JsonConvert.SerializeObject(new { action = "leave_room", playerId = connection.PlayerId });
+                var request = JsonConvert.DeserializeObject<Dictionary<string, object>>(requestJson);
                 await LeaveRoom(request);
             }
 
@@ -327,13 +339,13 @@ namespace TcpServer
         {
             try
             {
-                var request = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(message);
+                var request = JsonConvert.DeserializeObject<Dictionary<string, object>>(message);
                 if (!request.TryGetValue("action", out var actionElement))
                 {
                     return ErrorResponse("Action not specified");
                 }
 
-                string action = actionElement.GetString();
+                string action = actionElement.ToString();
                 return action switch
                 {
                     "register" => await Register(request),
@@ -357,26 +369,26 @@ namespace TcpServer
         }
 
         #region Message Handlers
-        private async Task<string> Register(Dictionary<string, JsonElement> request)
+        private async Task<string> Register(Dictionary<string, object> request)
         {
-            string id = request["id"].GetString();
-            string password = request["password"].GetString();
-            string playerName = request["playername"].GetString();
+            string id = request["id"].ToString();
+            string password = request["password"].ToString();
+            string playerName = request["playername"].ToString();
 
             var (success, message) = await database.Register(id, password, playerName);
             return Response("register", success, message);
         }
 
-        private async Task<string> Login(Dictionary<string, JsonElement> request, TcpServerConnection connection)
+        private async Task<string> Login(Dictionary<string, object> request, TcpServerConnection connection)
         {
-            string id = request["id"].GetString();
-            string password = request["password"].GetString();
+            string id = request["id"].ToString();
+            string password = request["password"].ToString();
 
             var (success, message, characterData) = await database.Login(id, password);
             if (success)
             {
                 connection.PlayerId = id;
-                return JsonSerializer.Serialize(new
+                return JsonConvert.SerializeObject(new
                 {
                     status = "success",
                     action = "login",
@@ -388,26 +400,41 @@ namespace TcpServer
             return ErrorResponse(message);
         }
 
-        private async Task<string> SaveData(Dictionary<string, JsonElement> request)
+        //private async Task<string> SaveData(Dictionary<string, object> request)
+        //{
+        //    try
+        //    {
+        //        string userId = request["userId"].ToString();
+        //        string characterDataJson = request["characterData"].GetRawText();
+        //        var characterData = new PlayerCharacterData
+        //        {
+        //            PlayerName = request["characterData"].GetProperty("PlayerName").GetString(),
+        //            PlayerId = request["characterData"].GetProperty("PlayerId").GetString(),
+        //            Gems = request["characterData"].GetProperty("Gems").GetInt32(),
+        //            Coins = request["characterData"].GetProperty("Coins").GetInt32(),
+        //            MaxHealth = request["characterData"].GetProperty("MaxHealth").GetInt32(),
+        //            HealthEnhancement = request["characterData"].GetProperty("HealthEnhancement").GetInt32(),
+        //            AttackPower = request["characterData"].GetProperty("AttackPower").GetInt32(),
+        //            AttackEnhancement = request["characterData"].GetProperty("AttackEnhancement").GetInt32(),
+        //            WeaponEnhancement = request["characterData"].GetProperty("WeaponEnhancement").GetInt32(),
+        //            ArmorEnhancement = request["characterData"].GetProperty("ArmorEnhancement").GetInt32()
+        //        };
+
+        //        var (success, message) = await database.SavePlayerData(userId, characterData);
+        //        return Response("save", success, message);
+        //    }
+        //    catch (Exception ex)
+        //    {
+        //        return ErrorResponse($"Failed to save player data: {ex.Message}");
+        //    }
+        //}
+
+        private async Task<string> SaveData(Dictionary<string, object> request)
         {
             try
             {
-                string userId = request["userId"].GetString();
-                string characterDataJson = request["characterData"].GetRawText();
-                var characterData = new PlayerCharacterData
-                {
-                    PlayerName = request["characterData"].GetProperty("PlayerName").GetString(),
-                    PlayerId = request["characterData"].GetProperty("PlayerId").GetString(),
-                    Gems = request["characterData"].GetProperty("Gems").GetInt32(),
-                    Coins = request["characterData"].GetProperty("Coins").GetInt32(),
-                    MaxHealth = request["characterData"].GetProperty("MaxHealth").GetInt32(),
-                    HealthEnhancement = request["characterData"].GetProperty("HealthEnhancement").GetInt32(),
-                    AttackPower = request["characterData"].GetProperty("AttackPower").GetInt32(),
-                    AttackEnhancement = request["characterData"].GetProperty("AttackEnhancement").GetInt32(),
-                    WeaponEnhancement = request["characterData"].GetProperty("WeaponEnhancement").GetInt32(),
-                    ArmorEnhancement = request["characterData"].GetProperty("ArmorEnhancement").GetInt32()
-                };
-
+                string userId = request["userId"].ToString();
+                var characterData = JsonConvert.DeserializeObject<PlayerCharacterData>(JsonConvert.SerializeObject(request["characterData"]));
                 var (success, message) = await database.SavePlayerData(userId, characterData);
                 return Response("save", success, message);
             }
@@ -417,11 +444,12 @@ namespace TcpServer
             }
         }
 
-        private async Task<string> CreateRoom(Dictionary<string, JsonElement> request)
+
+        private async Task<string> CreateRoom(Dictionary<string, object> request)
         {
-            string roomName = request["roomName"].GetString();
-            string hostId = request["hostId"].GetString();
-            string mapName = request["mapName"].GetString();
+            string roomName = request["roomName"].ToString();
+            string hostId = request["hostId"].ToString();
+            string mapName = request["mapName"].ToString();
 
             if (rooms.ContainsKey(roomName))
             {
@@ -441,6 +469,8 @@ namespace TcpServer
                 MapName = mapName
             };
 
+            room.SpawnIndexes[hostId] = room.GetNextSpawnIndex();
+
             rooms[roomName] = room;
             playerRooms[hostId] = roomName;
 
@@ -448,10 +478,10 @@ namespace TcpServer
             return Response("create_room", true, "방 생성 성공", new { room });
         }
 
-        private async Task<string> JoinRoom(Dictionary<string, JsonElement> request)
+        private async Task<string> JoinRoom(Dictionary<string, object> request)
         {
-            string roomName = request["roomName"].GetString();
-            string playerId = request["playerId"].GetString();
+            string roomName = request["roomName"].ToString();
+            string playerId = request["playerId"].ToString();
 
             if (!rooms.TryGetValue(roomName, out Room room))
             {
@@ -468,6 +498,7 @@ namespace TcpServer
                 return ErrorResponse("플레이어가 이미 방에 있습니다.");
             }
 
+            room.SpawnIndexes[playerId] = room.GetNextSpawnIndex();
             room.Players.Add(playerId);
             playerRooms[playerId] = roomName;
 
@@ -475,9 +506,9 @@ namespace TcpServer
             return Response("join_room", true, "방 참가 성공", new { room });
         }
 
-        private async Task<string> LeaveRoom(Dictionary<string, JsonElement> request)
+        private async Task<string> LeaveRoom(Dictionary<string, object> request)
         {
-            string playerId = request["playerId"].GetString();
+            string playerId = request["playerId"].ToString();
 
             if (!playerRooms.TryGetValue(playerId, out string roomName))
             {
@@ -508,11 +539,11 @@ namespace TcpServer
         }
 
 
-        private async Task<string> StartGame(Dictionary<string, JsonElement> request)
+        private async Task<string> StartGame(Dictionary<string, object> request)
         {
-            string roomName = request["roomName"].GetString();
-            string hostId = request["hostId"].GetString();
-            string sceneName = request["sceneName"].GetString();
+            string roomName = request["roomName"].ToString();
+            string hostId = request["hostId"].ToString();
+            string sceneName = request["sceneName"].ToString();
 
             if (!rooms.TryGetValue(roomName, out Room room))
             {
@@ -524,22 +555,27 @@ namespace TcpServer
                 return ErrorResponse("방장만 게임을 시작할 수 있습니다.");
             }
 
-            // 모든 플레이어에게 전달할 메시지 생성
-            var startGameMessage = new
+            // 방의 모든 플레이어에게 한 번만 메시지 전송
+            var startGameMessage = JsonConvert.SerializeObject(new
             {
                 status = "success",
                 action = "start_game",
                 message = "게임을 시작합니다.",
-                sceneName = sceneName
-            };
+                sceneName = sceneName,
+                players = room.Players // 참여 중인 플레이어 목록 포함
+            });
 
-            // 응답 생성
-            string messageJson = JsonSerializer.Serialize(startGameMessage);
+            // 방에 있는 모든 플레이어에게 메시지를 한 번만 전송
+            await BroadcastToRoom(roomName, startGameMessage);
 
-            // 방에 있는 모든 플레이어에게 메시지 전송
-            await BroadcastToRoom(roomName, messageJson);
+            // 방 정보 정리
+            //rooms.Remove(roomName);
+            //foreach (var player in room.Players)
+            //{
+            //    playerRooms.Remove(player);
+            //}
 
-            return messageJson;
+            return startGameMessage;
         }
 
         private async Task<string> GetRoomList()
@@ -547,46 +583,106 @@ namespace TcpServer
             return Response("get_room_list", true, "", rooms.Values);
         }
 
-        private async Task<string> PlayerSpawn(Dictionary<string, JsonElement> request)
+        private async Task<string> PlayerSpawn(Dictionary<string, object> request)
         {
-            string playerId = request["playerId"].GetString();
-            var position = request["position"].GetRawText();
-            int maxHealth = request["maxHealth"].GetInt32();
-            int attackPower = request["attackPower"].GetInt32();
-
-            if (playerRooms.TryGetValue(playerId, out string roomName))
+            try
             {
-                var spawnMessage = JsonSerializer.Serialize(new
+                string playerId = request["playerId"].ToString();
+                Console.WriteLine($"Received spawn request from: {playerId}");
+
+                if (!playerRooms.TryGetValue(playerId, out string roomName))
                 {
-                    action = "player_spawn",
-                    playerId,
-                    position = JsonSerializer.Deserialize<object>(position),
-                    maxHealth,
-                    attackPower
-                });
+                    Console.WriteLine("방에 사람이 없습니다.");
+                    return ErrorResponse("Room not found for player");
+                }
 
-                await BroadcastToRoom(roomName, spawnMessage);
+                if (!rooms.TryGetValue(roomName, out Room room))
+                {
+                    Console.WriteLine("방이 없습니다.");
+                    return ErrorResponse("Room not found for player");
+                }
+
+                // 해당 플레이어의 스폰 인덱스 가져오기
+                int spawnIndex = room.SpawnIndexes[playerId];
+
+                // 스폰 응답에 모든 정보 포함
+                var spawnResponse = new Dictionary<string, object>
+                {
+                    { "status", "success" },
+                    { "action", "player_spawn" },
+                    { "playerId", playerId },
+                    { "spawnIndex", spawnIndex },
+                    { "maxHealth", Convert.ToInt32(request["maxHealth"]) },
+                    { "attackPower", Convert.ToInt32(request["attackPower"]) }
+                };
+
+                string response = JsonConvert.SerializeObject(spawnResponse);
+
+                await BroadcastToRoom(roomName, response);
+
+                // 방의 다른 플레이어들의 정보도 새로 스폰된 플레이어에게 전송
+                foreach (var existingPlayerId in room.Players)
+                {
+                    if (existingPlayerId != playerId)
+                    {
+                        var existingPlayerData = new Dictionary<string, object>
+                        {
+                            { "status", "success" },
+                            { "action", "player_spawn" },
+                            { "playerId", existingPlayerId },
+                            { "spawnIndex", room.SpawnIndexes[existingPlayerId] },
+                            { "maxHealth", 100 }, // DB에서 가져오거나 기본값 사용
+                            { "attackPower", 10 }  // DB에서 가져오거나 기본값 사용
+                        };
+
+                        //await BroadcastToRoom(roomName, JsonConvert.SerializeObject(existingPlayerData));
+                        string existingPlayerMessage = JsonConvert.SerializeObject(existingPlayerData);
+                        await BroadcastToRoom(roomName, existingPlayerMessage);
+                    }
+                }
+                Console.WriteLine($"{playerId}가 성공적으로 생성되었습니다.");
+
+                return response;
             }
-
-            return Response("player_spawn", true, "");
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error in PlayerSpawn: {ex.Message}");
+                return ErrorResponse($"Spawn failed: {ex.Message}");
+            }
         }
 
-        private async Task<string> PlayerState(Dictionary<string, JsonElement> request)
+        private async Task<string> PlayerState(Dictionary<string, object> request)
         {
-            string playerId = request["playerId"].GetString();
+            string playerId = request["playerId"].ToString();
             if (playerRooms.TryGetValue(playerId, out string roomName))
             {
-                await BroadcastToRoom(roomName, JsonSerializer.Serialize(request));
+                // Response를 통한 응답 구조 통일
+                var stateResponse = new Dictionary<string, object>
+                {
+                    { "status", "success" },
+                    { "action", "player_state" },
+                    { "playerId", playerId },
+                    { "position", request["position"] },
+                    { "rotation", request["rotation"] },
+                    { "isRunning", request["isRunning"] },
+                    { "isAction", request["isAction"] },
+                    { "currentHealth", request["currentHealth"] },
+                    { "maxHealth", request["maxHealth"] },
+                    { "attackPower", request["attackPower"] }
+                };
+
+                string response = JsonConvert.SerializeObject(stateResponse);
+                await BroadcastToRoom(roomName, response);
             }
             return Response("player_state", true, "");
         }
 
-        private async Task<string> PlayerAction(Dictionary<string, JsonElement> request)
+        private async Task<string> PlayerAction(Dictionary<string, object> request)
         {
-            string playerId = request["playerId"].GetString();
+            string playerId = request["playerId"].ToString();
             if (playerRooms.TryGetValue(playerId, out string roomName))
             {
-                await BroadcastToRoom(roomName, JsonSerializer.Serialize(request));
+                await BroadcastToRoom(roomName, JsonConvert.SerializeObject(request));
             }
             return Response("player_action", true, "");
         }
@@ -598,20 +694,27 @@ namespace TcpServer
             if (!rooms.TryGetValue(roomName, out Room room)) return;
 
             var messageBytes = Encoding.UTF8.GetBytes(message);
-            var tasks = new List<Task>();
+            Console.WriteLine($"Broadcasting to room {roomName} - Message: {message}");
+            Console.WriteLine($"Players in room: {string.Join(", ", room.Players)}");
 
             foreach (var connection in connections.ToList())
             {
-                if (connection.IsConnected && room.Players.Contains(connection.PlayerId))
+                if (!connection.IsConnected) continue;
+
+                Console.WriteLine($"Checking connection for player {connection.PlayerId}");
+                if (room.Players.Contains(connection.PlayerId))
                 {
-                    // 각 플레이어에게 개별적으로 메시지 전송
-                    Console.WriteLine($"게임 시작 메시지 전송 to {connection.PlayerId}");
-                    tasks.Add(connection.Send(messageBytes));
+                    Console.WriteLine($"Sending game start message to player {connection.PlayerId}");
+                    try
+                    {
+                        await connection.Send(messageBytes);
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"Error sending message to {connection.PlayerId}: {ex.Message}");
+                    }
                 }
             }
-
-            // 모든 전송 작업이 완료될 때까지 대기
-            await Task.WhenAll(tasks);
         }
 
         private async Task BroadcastRoomList()
@@ -644,7 +747,7 @@ namespace TcpServer
             if (action == "get_room_list" && data != null)
             {
                 response["rooms"] = data;
-                return JsonSerializer.Serialize(response);
+                return JsonConvert.SerializeObject(response);
             }
 
             // 게임 시작인 경우 특별 처리
@@ -655,8 +758,20 @@ namespace TcpServer
                 {
                     response["sceneName"] = gameData["sceneName"];
                 }
-                return JsonSerializer.Serialize(response);
+                return JsonConvert.SerializeObject(response);
             }
+
+            //if (action == "player_spawn")
+            //{
+            //    var spawnData = data as Dictionary<string, object>;
+            //    if (spawnData != null)
+            //    {
+            //        foreach (var kvp in spawnData)
+            //        {
+            //            response[kvp.Key] = kvp.Value;
+            //        }
+            //    }
+            //}
 
             // 그 외 데이터가 있는 경우
             if (data != null)
@@ -667,12 +782,12 @@ namespace TcpServer
                 }
             }
 
-            return JsonSerializer.Serialize(response);
+            return JsonConvert.SerializeObject(response);
         }
 
         private string ErrorResponse(string message)
         {
-            return JsonSerializer.Serialize(new
+            return JsonConvert.SerializeObject(new
             {
                 status = "error",
                 message
