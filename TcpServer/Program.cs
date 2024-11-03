@@ -3,8 +3,6 @@ using Newtonsoft.Json;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
-//using System.Text.Json;
-//using JsonSerializer = System.Text.Json.JsonSerializer;
 
 namespace TcpServer
 {
@@ -236,7 +234,40 @@ namespace TcpServer
                 ? (true, "Player data saved successfully")
                 : (false, "No data was updated");
         }
+
+
+        public async Task<PlayerCharacterData> GetCharacterData(string playerId)
+        {
+            using var connection = new MySqlConnection(connectionString);
+            await connection.OpenAsync();
+
+            var characterCommand = new MySqlCommand(
+                "SELECT * FROM character_data WHERE player_id = @playerId",
+                connection);
+            characterCommand.Parameters.AddWithValue("@playerId", playerId);
+
+            using var characterReader = await characterCommand.ExecuteReaderAsync();
+            if (await characterReader.ReadAsync())
+            {
+                return new PlayerCharacterData
+                {
+                    PlayerName = characterReader["player_name"].ToString(),
+                    PlayerId = characterReader["player_id"].ToString(),
+                    Gems = Convert.ToInt32(characterReader["gems"]),
+                    Coins = Convert.ToInt32(characterReader["coins"]),
+                    MaxHealth = Convert.ToInt32(characterReader["max_health"]),
+                    HealthEnhancement = Convert.ToInt32(characterReader["health_enhancement"]),
+                    AttackPower = Convert.ToInt32(characterReader["attack_power"]),
+                    AttackEnhancement = Convert.ToInt32(characterReader["attack_enhancement"]),
+                    WeaponEnhancement = Convert.ToInt32(characterReader["weapon_enhancement"]),
+                    ArmorEnhancement = Convert.ToInt32(characterReader["armor_enhancement"])
+                };
+            }
+            return null;
+        }
     }
+
+
     #endregion
 
     #region Game Server
@@ -249,6 +280,9 @@ namespace TcpServer
         private readonly DatabaseManager database;
         private readonly int port;
         private bool isRunning;
+        private DateTime lastBroadcastTime = DateTime.UtcNow;
+        private readonly TimeSpan broadcastInterval = TimeSpan.FromMilliseconds(250);
+
 
         public TcpGameServer(string dbConnectionString, int port = 7777)
         {
@@ -568,13 +602,6 @@ namespace TcpServer
             // 방에 있는 모든 플레이어에게 메시지를 한 번만 전송
             await BroadcastToRoom(roomName, startGameMessage);
 
-            // 방 정보 정리
-            //rooms.Remove(roomName);
-            //foreach (var player in room.Players)
-            //{
-            //    playerRooms.Remove(player);
-            //}
-
             return startGameMessage;
         }
 
@@ -605,44 +632,60 @@ namespace TcpServer
                 // 해당 플레이어의 스폰 인덱스 가져오기
                 int spawnIndex = room.SpawnIndexes[playerId];
 
-                // 스폰 응답에 모든 정보 포함
-                var spawnResponse = new Dictionary<string, object>
+                // 현재 플레이어의 능력치를 DB에서 조회 (Login 대신 GetCharacterData 사용)
+                var playerCharacterData = await database.GetCharacterData(playerId);
+
+                if (playerCharacterData == null)
                 {
-                    { "status", "success" },
-                    { "action", "player_spawn" },
-                    { "playerId", playerId },
-                    { "spawnIndex", spawnIndex },
-                    { "maxHealth", Convert.ToInt32(request["maxHealth"]) },
-                    { "attackPower", Convert.ToInt32(request["attackPower"]) }
-                };
+                    Console.WriteLine($"Cannot find character data for player: {playerId}");
+                    return ErrorResponse("Cannot find player character data");
+                }
 
-                string response = JsonConvert.SerializeObject(spawnResponse);
+                // 새로 접속한 플레이어의 스폰 정보
+                var spawnData = new Dictionary<string, object>
+        {
+            { "status", "success" },
+            { "action", "player_spawn" },
+            { "playerId", playerId },
+            { "spawnIndex", spawnIndex },
+            { "maxHealth", playerCharacterData.MaxHealth },
+            { "attackPower", playerCharacterData.AttackPower }
+        };
 
-                await BroadcastToRoom(roomName, response);
+                // 모든 플레이어에게 새로운 플레이어의 스폰을 알림
+                string spawnMessage = JsonConvert.SerializeObject(spawnData);
+                await BroadcastToRoom(roomName, spawnMessage);
+                Console.WriteLine($"Broadcasting new player spawn: {playerId}");
 
-                // 방의 다른 플레이어들의 정보도 새로 스폰된 플레이어에게 전송
+                // 새로운 플레이어에게 기존 플레이어들의 정보 전송
                 foreach (var existingPlayerId in room.Players)
                 {
                     if (existingPlayerId != playerId)
                     {
-                        var existingPlayerData = new Dictionary<string, object>
-                        {
-                            { "status", "success" },
-                            { "action", "player_spawn" },
-                            { "playerId", existingPlayerId },
-                            { "spawnIndex", room.SpawnIndexes[existingPlayerId] },
-                            { "maxHealth", 100 }, // DB에서 가져오거나 기본값 사용
-                            { "attackPower", 10 }  // DB에서 가져오거나 기본값 사용
-                        };
+                        var existingPlayerData = await database.GetCharacterData(existingPlayerId);
+                        if (existingPlayerData == null) continue;
 
-                        //await BroadcastToRoom(roomName, JsonConvert.SerializeObject(existingPlayerData));
-                        string existingPlayerMessage = JsonConvert.SerializeObject(existingPlayerData);
-                        await BroadcastToRoom(roomName, existingPlayerMessage);
+                        var existingPlayerSpawnData = new Dictionary<string, object>
+                {
+                    { "status", "success" },
+                    { "action", "player_spawn" },
+                    { "playerId", existingPlayerId },
+                    { "spawnIndex", room.SpawnIndexes[existingPlayerId] },
+                    { "maxHealth", existingPlayerData.MaxHealth },
+                    { "attackPower", existingPlayerData.AttackPower }
+                };
+
+                        string existingPlayerMessage = JsonConvert.SerializeObject(existingPlayerSpawnData);
+                        var newPlayerConnection = connections.FirstOrDefault(c => c.PlayerId == playerId);
+                        if (newPlayerConnection != null)
+                        {
+                            await newPlayerConnection.Send(Encoding.UTF8.GetBytes(existingPlayerMessage));
+                        }
                     }
                 }
-                Console.WriteLine($"{playerId}가 성공적으로 생성되었습니다.");
 
-                return response;
+                Console.WriteLine($"{playerId}가 성공적으로 생성되었습니다.");
+                return spawnMessage;
             }
             catch (Exception ex)
             {
@@ -693,6 +736,17 @@ namespace TcpServer
         {
             if (!rooms.TryGetValue(roomName, out Room room)) return;
 
+            // player_state 메시지일 경우에만 쓰로틀링 적용
+            if (message.Contains("\"action\":\"player_state\""))
+            {
+                var now = DateTime.UtcNow;
+                if (now - lastBroadcastTime < broadcastInterval)
+                {
+                    return; // 너무 빠른 브로드캐스트는 스킵
+                }
+                lastBroadcastTime = now;
+            }
+
             var messageBytes = Encoding.UTF8.GetBytes(message);
             Console.WriteLine($"Broadcasting to room {roomName} - Message: {message}");
             Console.WriteLine($"Players in room: {string.Join(", ", room.Players)}");
@@ -704,7 +758,7 @@ namespace TcpServer
                 Console.WriteLine($"Checking connection for player {connection.PlayerId}");
                 if (room.Players.Contains(connection.PlayerId))
                 {
-                    Console.WriteLine($"Sending game start message to player {connection.PlayerId}");
+                    Console.WriteLine($"Sending message to player {connection.PlayerId}");
                     try
                     {
                         await connection.Send(messageBytes);
