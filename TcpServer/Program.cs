@@ -303,7 +303,7 @@ namespace TcpServer
                 isRunning = true;
                 Console.WriteLine($"서버가 포트 {port}에서 시작되었습니다.");
 
-                // Accept Loop
+                // Accept
                 while (isRunning)
                 {
                     var client = await listener.AcceptTcpClientAsync();
@@ -368,6 +368,7 @@ namespace TcpServer
             connections.Remove(connection);
             connection.Close();
         }
+
 
         private async Task<string> ActionResponse(string message, TcpServerConnection connection)
         {
@@ -434,35 +435,7 @@ namespace TcpServer
             return ErrorResponse(message);
         }
 
-        //private async Task<string> SaveData(Dictionary<string, object> request)
-        //{
-        //    try
-        //    {
-        //        string userId = request["userId"].ToString();
-        //        string characterDataJson = request["characterData"].GetRawText();
-        //        var characterData = new PlayerCharacterData
-        //        {
-        //            PlayerName = request["characterData"].GetProperty("PlayerName").GetString(),
-        //            PlayerId = request["characterData"].GetProperty("PlayerId").GetString(),
-        //            Gems = request["characterData"].GetProperty("Gems").GetInt32(),
-        //            Coins = request["characterData"].GetProperty("Coins").GetInt32(),
-        //            MaxHealth = request["characterData"].GetProperty("MaxHealth").GetInt32(),
-        //            HealthEnhancement = request["characterData"].GetProperty("HealthEnhancement").GetInt32(),
-        //            AttackPower = request["characterData"].GetProperty("AttackPower").GetInt32(),
-        //            AttackEnhancement = request["characterData"].GetProperty("AttackEnhancement").GetInt32(),
-        //            WeaponEnhancement = request["characterData"].GetProperty("WeaponEnhancement").GetInt32(),
-        //            ArmorEnhancement = request["characterData"].GetProperty("ArmorEnhancement").GetInt32()
-        //        };
-
-        //        var (success, message) = await database.SavePlayerData(userId, characterData);
-        //        return Response("save", success, message);
-        //    }
-        //    catch (Exception ex)
-        //    {
-        //        return ErrorResponse($"Failed to save player data: {ex.Message}");
-        //    }
-        //}
-
+       
         private async Task<string> SaveData(Dictionary<string, object> request)
         {
             try
@@ -615,119 +588,196 @@ namespace TcpServer
             try
             {
                 string playerId = request["playerId"].ToString();
-                Console.WriteLine($"Received spawn request from: {playerId}");
+                Console.WriteLine($"[PlayerSpawn] Received spawn request from: {playerId}");
 
                 if (!playerRooms.TryGetValue(playerId, out string roomName))
                 {
-                    Console.WriteLine("방에 사람이 없습니다.");
+                    Console.WriteLine("[PlayerSpawn] Room not found for player");
                     return ErrorResponse("Room not found for player");
                 }
 
                 if (!rooms.TryGetValue(roomName, out Room room))
                 {
-                    Console.WriteLine("방이 없습니다.");
-                    return ErrorResponse("Room not found for player");
+                    Console.WriteLine("[PlayerSpawn] Room does not exist");
+                    return ErrorResponse("Room not found");
                 }
 
-                // 해당 플레이어의 스폰 인덱스 가져오기
-                int spawnIndex = room.SpawnIndexes[playerId];
-
-                // 현재 플레이어의 능력치를 DB에서 조회 (Login 대신 GetCharacterData 사용)
-                var playerCharacterData = await database.GetCharacterData(playerId);
-
-                if (playerCharacterData == null)
+                // 현재 플레이어의 데이터 조회
+                var playerData = await database.GetCharacterData(playerId);
+                if (playerData == null)
                 {
-                    Console.WriteLine($"Cannot find character data for player: {playerId}");
-                    return ErrorResponse("Cannot find player character data");
+                    Console.WriteLine($"[PlayerSpawn] No character data for player: {playerId}");
+                    return ErrorResponse("Character data not found");
                 }
 
-                // 새로 접속한 플레이어의 스폰 정보
+                // 1. 현재 플레이어의 스폰 메시지 생성
                 var spawnData = new Dictionary<string, object>
-        {
-            { "status", "success" },
-            { "action", "player_spawn" },
-            { "playerId", playerId },
-            { "spawnIndex", spawnIndex },
-            { "maxHealth", playerCharacterData.MaxHealth },
-            { "attackPower", playerCharacterData.AttackPower }
-        };
-
-                // 모든 플레이어에게 새로운 플레이어의 스폰을 알림
-                string spawnMessage = JsonConvert.SerializeObject(spawnData);
-                await BroadcastToRoom(roomName, spawnMessage);
-                Console.WriteLine($"Broadcasting new player spawn: {playerId}");
-
-                // 새로운 플레이어에게 기존 플레이어들의 정보 전송
-                foreach (var existingPlayerId in room.Players)
-                {
-                    if (existingPlayerId != playerId)
-                    {
-                        var existingPlayerData = await database.GetCharacterData(existingPlayerId);
-                        if (existingPlayerData == null) continue;
-
-                        var existingPlayerSpawnData = new Dictionary<string, object>
                 {
                     { "status", "success" },
                     { "action", "player_spawn" },
-                    { "playerId", existingPlayerId },
-                    { "spawnIndex", room.SpawnIndexes[existingPlayerId] },
-                    { "maxHealth", existingPlayerData.MaxHealth },
-                    { "attackPower", existingPlayerData.AttackPower }
+                    { "playerId", playerId },
+                    { "spawnIndex", room.SpawnIndexes[playerId] },
+                    { "maxHealth", playerData.MaxHealth },
+                    { "attackPower", playerData.AttackPower }
                 };
 
-                        string existingPlayerMessage = JsonConvert.SerializeObject(existingPlayerSpawnData);
-                        var newPlayerConnection = connections.FirstOrDefault(c => c.PlayerId == playerId);
-                        if (newPlayerConnection != null)
+                string spawnMessage = JsonConvert.SerializeObject(spawnData);
+                Console.WriteLine($"[PlayerSpawn] Broadcasting spawn data for player: {playerId}");
+
+                // 2. 현재 플레이어의 스폰 메시지를 방의 모든 플레이어에게 전송
+                foreach (var connectionToSend in connections.ToList())
+                {
+                    if (!connectionToSend.IsConnected) continue;
+                    if (!room.Players.Contains(connectionToSend.PlayerId)) continue;
+
+                    Console.WriteLine($"[PlayerSpawn] Sending spawn data to: {connectionToSend.PlayerId}");
+                    await connectionToSend.Send(Encoding.UTF8.GetBytes(spawnMessage));
+
+                    // 3. 기존 플레이어들의 스폰 정보도 현재 연결된 클라이언트에게 전송
+                    foreach (var existingPlayerId in room.Players)
+                    {
+                        // 자기 자신의 정보는 건너뛰기
+                        if (existingPlayerId == connectionToSend.PlayerId) continue;
+
+                        var existingPlayerData = await database.GetCharacterData(existingPlayerId);
+                        if (existingPlayerData == null) continue;
+
+                        var existingSpawnData = new Dictionary<string, object>
                         {
-                            await newPlayerConnection.Send(Encoding.UTF8.GetBytes(existingPlayerMessage));
-                        }
+                            { "status", "success" },
+                            { "action", "player_spawn" },
+                            { "playerId", existingPlayerId },
+                            { "spawnIndex", room.SpawnIndexes[existingPlayerId] },
+                            { "maxHealth", existingPlayerData.MaxHealth },
+                            { "attackPower", existingPlayerData.AttackPower }
+                        };
+
+                        string existingSpawnMessage = JsonConvert.SerializeObject(existingSpawnData);
+                        Console.WriteLine($"[PlayerSpawn] Sending existing player {existingPlayerId} data to {connectionToSend.PlayerId}");
+                        await connectionToSend.Send(Encoding.UTF8.GetBytes(existingSpawnMessage));
                     }
                 }
 
-                Console.WriteLine($"{playerId}가 성공적으로 생성되었습니다.");
+                Console.WriteLine($"[PlayerSpawn] Completed spawn process for room: {roomName}, Total players: {room.Players.Count}");
                 return spawnMessage;
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error in PlayerSpawn: {ex.Message}");
+                Console.WriteLine($"[PlayerSpawn] Error: {ex.Message}\nStack trace: {ex.StackTrace}");
                 return ErrorResponse($"Spawn failed: {ex.Message}");
             }
         }
 
         private async Task<string> PlayerState(Dictionary<string, object> request)
         {
-            string playerId = request["playerId"].ToString();
-            if (playerRooms.TryGetValue(playerId, out string roomName))
+            try
             {
-                // Response를 통한 응답 구조 통일
-                var stateResponse = new Dictionary<string, object>
+                string playerId = request["playerId"].ToString();
+                if (playerRooms.TryGetValue(playerId, out string roomName))
                 {
-                    { "status", "success" },
-                    { "action", "player_state" },
-                    { "playerId", playerId },
-                    { "position", request["position"] },
-                    { "rotation", request["rotation"] },
-                    { "isRunning", request["isRunning"] },
-                    { "isAction", request["isAction"] },
-                    { "currentHealth", request["currentHealth"] },
-                    { "maxHealth", request["maxHealth"] },
-                    { "attackPower", request["attackPower"] }
-                };
+                    // 클라이언트로부터 받은 모든 상태 데이터를 포함하여 전달
+                    var stateResponse = new
+                    {
+                        status = "success",
+                        action = "player_state",
+                        playerId = playerId,
+                        position = request["position"],
+                        rotation = request["rotation"],
+                        isRunning = request["isRunning"],
+                        isAction = request["isAction"],
+                        currentHealth = request["currentHealth"],
+                        maxHealth = request["maxHealth"],
+                        attackPower = request["attackPower"]
+                    };
 
-                string response = JsonConvert.SerializeObject(stateResponse);
-                await BroadcastToRoom(roomName, response);
+                    string response = JsonConvert.SerializeObject(stateResponse);
+                    await BroadcastToRoom(roomName, response);
+
+                    // 실제 상태 데이터를 포함한 응답 반환
+                    return response;
+                }
+                return Response("player_state", true, "");
             }
-            return Response("player_state", true, "");
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[PlayerState] Error: {ex.Message}");
+                return ErrorResponse($"State update failed: {ex.Message}");
+            }
         }
 
         private async Task<string> PlayerAction(Dictionary<string, object> request)
         {
-            string playerId = request["playerId"].ToString();
-            if (playerRooms.TryGetValue(playerId, out string roomName))
+            try
             {
-                await BroadcastToRoom(roomName, JsonConvert.SerializeObject(request));
+                string playerId = request["playerId"].ToString();
+                Console.WriteLine($"[PlayerAction] Received spawn request from: {playerId}");
+
+                if (!playerRooms.TryGetValue(playerId, out string roomName))
+                {
+                    Console.WriteLine("[PlayerAction] Room not found for player");
+                    return ErrorResponse("Room not found for player");
+                }
+
+                if (!rooms.TryGetValue(roomName, out Room room))
+                {
+                    Console.WriteLine("[PlayerAction] Room does not exist");
+                    return ErrorResponse("Room not found");
+                }
+
+                string actionName = request["actionName"].ToString();
+                
+                
+                var actionData = new Dictionary<string, object>
+                {
+                    { "status", "success" },
+                    { "action", "player_action" },
+                    { "actionName", actionName },
+                    { "playerId", playerId },
+                };
+
+                string actionMessage = JsonConvert.SerializeObject(actionData);
+                Console.WriteLine($"[player_action] Broadcasting spawn data for player: {playerId}");
+
+                foreach (var connectionToSend in connections.ToList())
+                {
+                    if (!connectionToSend.IsConnected) continue;
+                    if (!room.Players.Contains(connectionToSend.PlayerId)) continue;
+
+                    Console.WriteLine($"[player_action] Sending spawn data to: {connectionToSend.PlayerId}");
+                    await connectionToSend.Send(Encoding.UTF8.GetBytes(actionMessage));
+
+                    
+                    foreach (var existingPlayerId in room.Players)
+                    {
+                        // 자기 자신의 정보는 건너뛰기
+                        if (existingPlayerId == connectionToSend.PlayerId) continue;
+
+                        var existingPlayerData = await database.GetCharacterData(existingPlayerId);
+                        if (existingPlayerData == null) continue;
+
+                        var existingActionData = new Dictionary<string, object>
+                        {
+                             { "status", "success" },
+                            { "action", "player_action" },
+                            { "actionName", actionName },
+                            { "playerId", playerId },
+                        };
+
+                        string existingActionMessage = JsonConvert.SerializeObject(existingActionData);
+                        Console.WriteLine($"[player_action] Sending existing player {existingPlayerId} data to {connectionToSend.PlayerId}");
+                        await connectionToSend.Send(Encoding.UTF8.GetBytes(existingActionMessage));
+                    }
+                }
+
+                Console.WriteLine($"[player_action] Completed spawn process for room: {roomName}, Total players: {room.Players.Count}");
+                return actionMessage;
             }
-            return Response("player_action", true, "");
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[player_action] Error: {ex.Message}\nStack trace: {ex.StackTrace}");
+                return ErrorResponse($"player_action failed: {ex.Message}");
+            }
+
         }
         #endregion
 
@@ -736,13 +786,13 @@ namespace TcpServer
         {
             if (!rooms.TryGetValue(roomName, out Room room)) return;
 
-            // player_state 메시지일 경우에만 쓰로틀링 적용
+            // player_state 메시지일 경우, 쓰로틀링 적용
             if (message.Contains("\"action\":\"player_state\""))
             {
                 var now = DateTime.UtcNow;
                 if (now - lastBroadcastTime < broadcastInterval)
                 {
-                    return; // 너무 빠른 브로드캐스트는 스킵
+                    return; 
                 }
                 lastBroadcastTime = now;
             }
@@ -814,18 +864,6 @@ namespace TcpServer
                 }
                 return JsonConvert.SerializeObject(response);
             }
-
-            //if (action == "player_spawn")
-            //{
-            //    var spawnData = data as Dictionary<string, object>;
-            //    if (spawnData != null)
-            //    {
-            //        foreach (var kvp in spawnData)
-            //        {
-            //            response[kvp.Key] = kvp.Value;
-            //        }
-            //    }
-            //}
 
             // 그 외 데이터가 있는 경우
             if (data != null)
