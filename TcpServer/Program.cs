@@ -301,7 +301,7 @@ namespace TcpServer
                 // Bind & Listen
                 listener.Start();
                 isRunning = true;
-                Console.WriteLine($"서버가 포트 {port}에서 시작되었습니다.");
+                Console.WriteLine($"Server Port : {port}, Start Server");
 
                 // Accept
                 while (isRunning)
@@ -309,13 +309,13 @@ namespace TcpServer
                     var client = await listener.AcceptTcpClientAsync();
                     var connection = new TcpServerConnection(client);
                     connections.Add(connection);
-                    Console.WriteLine($"새로운 클라이언트가 연결되었습니다.");
+                    Console.WriteLine($"Client Connect.");
                     _ = ClientConnect(connection);
                 }
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"서버 에러: {ex.Message}");
+                Console.WriteLine($"Server error : {ex.Message}");
                 Stop();
             }
         }
@@ -348,7 +348,7 @@ namespace TcpServer
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"클라이언트 처리 중 에러: {ex.Message}");
+                Console.WriteLine($"Client error : {ex.Message}");
             }
             finally
             {
@@ -435,7 +435,7 @@ namespace TcpServer
             return ErrorResponse(message);
         }
 
-       
+
         private async Task<string> SaveData(Dictionary<string, object> request)
         {
             try
@@ -460,12 +460,12 @@ namespace TcpServer
 
             if (rooms.ContainsKey(roomName))
             {
-                return ErrorResponse("이미 존재하는 방 이름입니다.");
+                return ErrorResponse("Room is already exist.");
             }
 
             if (playerRooms.ContainsKey(hostId))
             {
-                return ErrorResponse("플레이어가 이미 방에 있습니다.");
+                return ErrorResponse("Player is already in the room");
             }
 
             var room = new Room
@@ -492,17 +492,17 @@ namespace TcpServer
 
             if (!rooms.TryGetValue(roomName, out Room room))
             {
-                return ErrorResponse("방을 찾을 수 없습니다.");
+                return ErrorResponse("Can't find the room.");
             }
 
             if (room.Players.Count >= room.MaxPlayers)
             {
-                return ErrorResponse("방이 가득 찼습니다.");
+                return ErrorResponse("room is full.");
             }
 
             if (playerRooms.ContainsKey(playerId))
             {
-                return ErrorResponse("플레이어가 이미 방에 있습니다.");
+                return ErrorResponse("Player is already in the room");
             }
 
             room.SpawnIndexes[playerId] = room.GetNextSpawnIndex();
@@ -519,12 +519,12 @@ namespace TcpServer
 
             if (!playerRooms.TryGetValue(playerId, out string roomName))
             {
-                return ErrorResponse("플레이어가 어떤 방에도 속해있지 않습니다.");
+                return ErrorResponse("Player is not in the room");
             }
 
             if (!rooms.TryGetValue(roomName, out Room room))
             {
-                return ErrorResponse("방을 찾을 수 없습니다.");
+                return ErrorResponse("Can't find the room.");
             }
 
             room.Players.Remove(playerId);
@@ -554,12 +554,12 @@ namespace TcpServer
 
             if (!rooms.TryGetValue(roomName, out Room room))
             {
-                return ErrorResponse("방을 찾을 수 없습니다.");
+                return ErrorResponse("Can't find the room");
             }
 
             if (room.HostId != hostId)
             {
-                return ErrorResponse("방장만 게임을 시작할 수 있습니다.");
+                return ErrorResponse("Only host can be started.");
             }
 
             // 방의 모든 플레이어에게 한 번만 메시지 전송
@@ -583,6 +583,90 @@ namespace TcpServer
             return Response("get_room_list", true, "", rooms.Values);
         }
 
+        //private async Task<string> PlayerSpawn(Dictionary<string, object> request)
+        //{
+        //    try
+        //    {
+        //        string playerId = request["playerId"].ToString();
+        //        Console.WriteLine($"[PlayerSpawn] Received spawn request from: {playerId}");
+
+        //        if (!playerRooms.TryGetValue(playerId, out string roomName))
+        //        {
+        //            Console.WriteLine("[PlayerSpawn] Room not found for player");
+        //            return ErrorResponse("Room not found for player");
+        //        }
+
+        //        if (!rooms.TryGetValue(roomName, out Room room))
+        //        {
+        //            Console.WriteLine("[PlayerSpawn] Room does not exist");
+        //            return ErrorResponse("Room not found");
+        //        }
+
+        //        // 현재 플레이어의 데이터 조회
+        //        var playerData = await database.GetCharacterData(playerId);
+        //        if (playerData == null)
+        //        {
+        //            Console.WriteLine($"[PlayerSpawn] No character data for player: {playerId}");
+        //            return ErrorResponse("Character data not found");
+        //        }
+
+        //        // 1. 현재 플레이어의 스폰 메시지 생성
+        //        var spawnData = new Dictionary<string, object>
+        //        {
+        //            { "status", "success" },
+        //            { "action", "player_spawn" },
+        //            { "playerId", playerId },
+        //            { "spawnIndex", room.SpawnIndexes[playerId] },
+        //            { "maxHealth", playerData.MaxHealth },
+        //            { "attackPower", playerData.AttackPower }
+        //        };
+
+        //        string spawnMessage = JsonConvert.SerializeObject(spawnData);
+        //        Console.WriteLine($"[PlayerSpawn] Broadcasting spawn data for player: {playerId}");
+
+        //        // 2. 현재 플레이어의 스폰 메시지를 방의 모든 플레이어에게 전송
+        //        foreach (var connectionToSend in connections.ToList())
+        //        {
+        //            if (!connectionToSend.IsConnected) continue;
+        //            if (!room.Players.Contains(connectionToSend.PlayerId)) continue;
+
+        //            Console.WriteLine($"[PlayerSpawn] Sending spawn data to: {connectionToSend.PlayerId}");
+        //            await connectionToSend.Send(Encoding.UTF8.GetBytes(spawnMessage));
+
+        //            // 3. 기존 플레이어들의 스폰 정보도 현재 연결된 클라이언트에게 전송
+        //            foreach (var existingPlayerId in room.Players)
+        //            {
+        //                // 자기 자신의 정보는 건너뛰기
+        //                if (existingPlayerId == connectionToSend.PlayerId) continue;
+
+        //                var existingPlayerData = await database.GetCharacterData(existingPlayerId);
+        //                if (existingPlayerData == null) continue;
+
+        //                var existingSpawnData = new Dictionary<string, object>
+        //                {
+        //                    { "status", "success" },
+        //                    { "action", "player_spawn" },
+        //                    { "playerId", existingPlayerId },
+        //                    { "spawnIndex", room.SpawnIndexes[existingPlayerId] },
+        //                    { "maxHealth", existingPlayerData.MaxHealth },
+        //                    { "attackPower", existingPlayerData.AttackPower }
+        //                };
+
+        //                string existingSpawnMessage = JsonConvert.SerializeObject(existingSpawnData);
+        //                Console.WriteLine($"[PlayerSpawn] Sending existing player {existingPlayerId} data to {connectionToSend.PlayerId}");
+        //                await connectionToSend.Send(Encoding.UTF8.GetBytes(existingSpawnMessage));
+        //            }
+        //        }
+
+        //        Console.WriteLine($"[PlayerSpawn] Completed spawn process for room: {roomName}, Total players: {room.Players.Count}");
+        //        return spawnMessage;
+        //    }
+        //    catch (Exception ex)
+        //    {
+        //        Console.WriteLine($"[PlayerSpawn] Error: {ex.Message}\nStack trace: {ex.StackTrace}");
+        //        return ErrorResponse($"Spawn failed: {ex.Message}");
+        //    }
+        //}
         private async Task<string> PlayerSpawn(Dictionary<string, object> request)
         {
             try
@@ -602,7 +686,6 @@ namespace TcpServer
                     return ErrorResponse("Room not found");
                 }
 
-                // 현재 플레이어의 데이터 조회
                 var playerData = await database.GetCharacterData(playerId);
                 if (playerData == null)
                 {
@@ -610,7 +693,7 @@ namespace TcpServer
                     return ErrorResponse("Character data not found");
                 }
 
-                // 1. 현재 플레이어의 스폰 메시지 생성
+                // 스폰 메시지를 생성하고 방의 모든 플레이어에게 전송
                 var spawnData = new Dictionary<string, object>
                 {
                     { "status", "success" },
@@ -622,43 +705,7 @@ namespace TcpServer
                 };
 
                 string spawnMessage = JsonConvert.SerializeObject(spawnData);
-                Console.WriteLine($"[PlayerSpawn] Broadcasting spawn data for player: {playerId}");
-
-                // 2. 현재 플레이어의 스폰 메시지를 방의 모든 플레이어에게 전송
-                foreach (var connectionToSend in connections.ToList())
-                {
-                    if (!connectionToSend.IsConnected) continue;
-                    if (!room.Players.Contains(connectionToSend.PlayerId)) continue;
-
-                    Console.WriteLine($"[PlayerSpawn] Sending spawn data to: {connectionToSend.PlayerId}");
-                    await connectionToSend.Send(Encoding.UTF8.GetBytes(spawnMessage));
-
-                    // 3. 기존 플레이어들의 스폰 정보도 현재 연결된 클라이언트에게 전송
-                    foreach (var existingPlayerId in room.Players)
-                    {
-                        // 자기 자신의 정보는 건너뛰기
-                        if (existingPlayerId == connectionToSend.PlayerId) continue;
-
-                        var existingPlayerData = await database.GetCharacterData(existingPlayerId);
-                        if (existingPlayerData == null) continue;
-
-                        var existingSpawnData = new Dictionary<string, object>
-                        {
-                            { "status", "success" },
-                            { "action", "player_spawn" },
-                            { "playerId", existingPlayerId },
-                            { "spawnIndex", room.SpawnIndexes[existingPlayerId] },
-                            { "maxHealth", existingPlayerData.MaxHealth },
-                            { "attackPower", existingPlayerData.AttackPower }
-                        };
-
-                        string existingSpawnMessage = JsonConvert.SerializeObject(existingSpawnData);
-                        Console.WriteLine($"[PlayerSpawn] Sending existing player {existingPlayerId} data to {connectionToSend.PlayerId}");
-                        await connectionToSend.Send(Encoding.UTF8.GetBytes(existingSpawnMessage));
-                    }
-                }
-
-                Console.WriteLine($"[PlayerSpawn] Completed spawn process for room: {roomName}, Total players: {room.Players.Count}");
+                await BroadcastToRoom(roomName, spawnMessage);
                 return spawnMessage;
             }
             catch (Exception ex)
@@ -667,7 +714,6 @@ namespace TcpServer
                 return ErrorResponse($"Spawn failed: {ex.Message}");
             }
         }
-
         private async Task<string> PlayerState(Dictionary<string, object> request)
         {
             try
@@ -725,8 +771,8 @@ namespace TcpServer
                 }
 
                 string actionName = request["actionName"].ToString();
-                
-                
+
+
                 var actionData = new Dictionary<string, object>
                 {
                     { "status", "success" },
@@ -746,7 +792,7 @@ namespace TcpServer
                     Console.WriteLine($"[player_action] Sending spawn data to: {connectionToSend.PlayerId}");
                     await connectionToSend.Send(Encoding.UTF8.GetBytes(actionMessage));
 
-                    
+
                     foreach (var existingPlayerId in room.Players)
                     {
                         // 자기 자신의 정보는 건너뛰기
@@ -792,7 +838,7 @@ namespace TcpServer
                 var now = DateTime.UtcNow;
                 if (now - lastBroadcastTime < broadcastInterval)
                 {
-                    return; 
+                    return;
                 }
                 lastBroadcastTime = now;
             }
